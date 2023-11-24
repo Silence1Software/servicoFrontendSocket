@@ -34,6 +34,10 @@ io.on("connection", (socket) => {
     });
   });
 
+  socket.on("request_all_servers", () => {
+    socket.emit("result_all_servers", usersRoom || []);
+  });
+
   socket.on("create_room", (roomName) => {
     socket.join(roomName);
     socket.room = roomName;
@@ -47,6 +51,7 @@ io.on("connection", (socket) => {
       existingRoom = {
         roomID: roomName,
         users: [],
+        maxUsers: 10,
         positions: initialPositions,
       };
       usersRoom.push(existingRoom);
@@ -62,7 +67,7 @@ io.on("connection", (socket) => {
     io.to(roomName).emit("initial_positions", {
       positions: existingRoom.positions,
     });
-
+    socket.broadcast.emit("result_all_servers", usersRoom || []);
     socket.broadcast.emit("new_room", { roomName });
   });
 
@@ -71,14 +76,7 @@ io.on("connection", (socket) => {
     console.log(existingRoom);
 
     if (!existingRoom) {
-      // Se a sala não existe, crie uma nova sala com posições iniciais
-      const initialPositions = generateInitialPositions();
-      existingRoom = {
-        roomID: roomName,
-        users: [],
-        positions: initialPositions,
-      };
-      usersRoom.push(existingRoom);
+      return;
     }
 
     if (existingRoom.users.find((user) => user.id === socket.id)) return;
@@ -98,6 +96,7 @@ io.on("connection", (socket) => {
     io.to(roomName).emit("initial_positions", {
       positions: existingRoom.positions,
     });
+    socket.broadcast.emit("result_all_servers", existingRoom);
   });
 
   socket.on("update_positions", (updatedPositions) => {
