@@ -50,25 +50,36 @@ io.on("connection", (socket) => {
       const initialPositions = generateInitialPositions();
       existingRoom = {
         roomID: roomName,
+        hostID: socket.id,
         users: [],
-        maxUsers: 10,
+        maxUsers: 4,
         positions: initialPositions,
+        startGame: false,
       };
       usersRoom.push(existingRoom);
     }
 
     existingRoom.users.push({ id: socket.id });
-    io.to(roomName).emit("room_users", {
-      adapter: io.sockets.adapter.rooms.get(roomName),
-      users: existingRoom.users,
-    });
 
     // Envie posições iniciais para o usuário recém-conectado
     io.to(roomName).emit("initial_positions", {
       positions: existingRoom.positions,
     });
-    socket.broadcast.emit("result_all_servers", usersRoom || []);
+    // socket.broadcast.emit("result_all_servers", usersRoom || []);
     socket.broadcast.emit("new_room", { roomName });
+  });
+
+  socket.on("join_room_me", (roomName) => {
+    let existingRoom = usersRoom.find((room) => room.roomID === roomName);
+
+    if (!existingRoom) {
+      return;
+    }
+
+    io.to(roomName).emit("room_users", {
+      adapter: io.sockets.adapter.rooms.get(roomName),
+      existingRoom,
+    });
   });
 
   socket.on("join_room", (roomName) => {
@@ -88,7 +99,7 @@ io.on("connection", (socket) => {
     existingRoom.users.push({ id: socket.id });
     io.to(roomName).emit("room_users", {
       adapter: io.sockets.adapter.rooms.get(roomName),
-      users: existingRoom.users,
+      existingRoom,
     });
 
     // Envie posições iniciais para o usuário recém-conectado
@@ -96,7 +107,7 @@ io.on("connection", (socket) => {
     io.to(roomName).emit("initial_positions", {
       positions: existingRoom.positions,
     });
-    socket.broadcast.emit("result_all_servers", existingRoom);
+    socket.broadcast.emit("result_all_servers", usersRoom);
   });
 
   socket.on("update_positions", (updatedPositions) => {
@@ -110,15 +121,21 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("leave_room", (roomName) => {
+  socket.on("leave_room", ({ roomName, user }) => {
     socket.leave(roomName);
-    console.log(`User ${socket.id} leave room: ${roomName}`);
+    console.log(`User ${socket.id} leave room: ${roomName} user: ${user}`);
     // Procurar a sala com base no roomName
     const existingRoom = usersRoom.find((room) => room.roomID === roomName);
 
     if (existingRoom) {
       // Se a sala já existe, adicione o usuário a essa sala
       existingRoom.users = existingRoom.users.filter((user) => user.id !== socket.id);
+      io.to(user).emit("success_leave_room", true);
+      if (existingRoom.user <= 0) {
+        usersRoom.filter((room) => room.roomID !== existingRoom.roomID);
+      }
+    } else {
+      return;
     }
 
     console.log(usersRoom);
@@ -126,7 +143,7 @@ io.on("connection", (socket) => {
     console.log(existingRoom);
     io.to(roomName).emit("room_users", {
       adapter: io.sockets.adapter.rooms.get(roomName),
-      users: existingRoom ? existingRoom.users : [],
+      existingRoom,
     });
   });
 
@@ -136,8 +153,8 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("start_game", () => {
-    const roomName = socket.room;
+  socket.on("start_game", (id) => {
+    const roomName = id;
     const room = io.sockets.adapter.rooms.get(roomName);
     const existingRoom = usersRoom.find((room) => room.roomID === roomName);
     if (existingRoom) {
@@ -148,7 +165,7 @@ io.on("connection", (socket) => {
       io.to(roomName).emit("game_started");
       startGame(io, roomName, existingRoom);
     } else {
-      io.to(roomName).emit("insufficient_players");
+      io.to(existingRoom.hostID).emit("insufficient_players", { size: room.size });
     }
   });
 
@@ -186,6 +203,42 @@ io.on("connection", (socket) => {
 //   }
 // };
 
+const containerWidth = 1100;
+const containerHeight = 300;
+const minDistance = 200; // Ajuste conforme necessário
+
+function isPositionOutOfBounds(position) {
+  const maxX = containerWidth - 200; // Ajuste conforme necessário
+  const maxY = containerHeight - 150;
+
+  return position.left < 0 || position.left > maxX || position.top < 0 || position.top > maxY;
+}
+
+function getRandomPosition() {
+  const randomX = Math.floor(Math.random() * (containerWidth - 200)); // Ajuste o intervalo
+  const randomY = Math.floor(Math.random() * (containerHeight - 150));
+  const zIndex = Math.floor(Math.random() * 4) + 1; // Z-index de 1 a 4
+
+  return {
+    left: `${randomX}px`,
+    top: `${randomY}px`,
+    zIndex: zIndex,
+  };
+}
+
+function isPositionOccupied(newPosition, existingPositions) {
+  for (const pos of existingPositions) {
+    const deltaX = Math.abs(newPosition.left - pos.left);
+    const deltaY = Math.abs(newPosition.top - pos.top);
+
+    // Verificar se a nova posição está muito próxima de qualquer posição existente
+    if (deltaX < minDistance && deltaY < minDistance) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function generateInitialPositions() {
   const initialPositions = [];
   const numUsers = 4; // Número de usuários na sala
@@ -203,28 +256,12 @@ function generateInitialPositions() {
   return initialPositions;
 }
 
-function isPositionOccupied(newPosition, positions) {
-  for (const pos of positions) {
-    const deltaX = Math.abs(newPosition.left - pos.left);
-    const deltaY = Math.abs(newPosition.top - pos.top);
-    if (deltaX < 200 && deltaY < 200) {
-      // Update the threshold to prevent characters from overlapping
-      return true;
-    }
-  }
-  return false;
-}
+const initialPositions = generateInitialPositions();
 
-function getRandomPosition() {
-  const randomX = Math.floor(Math.random() * 440 - 200); // Adjust the range to stay within the ul container
-  const randomY = Math.floor(Math.random() * 200 - 100);
-  const zIndex = Math.floor(Math.random() * 4) + 1; // Z-index de 1 a 4
-
-  return {
-    left: `${randomX}px`,
-    top: `${randomY}px`,
-    zIndex: zIndex,
-  };
+if (initialPositions.some(isPositionOutOfBounds)) {
+  console.error("Alguma posição está fora dos limites do contêiner.");
+} else {
+  console.log("Todas as posições estão dentro dos limites do contêiner.");
 }
 
 // Assuming you have a variable to keep track of the game status
