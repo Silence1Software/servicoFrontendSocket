@@ -7,12 +7,10 @@ const io = new Server(server);
 var users = [];
 var usersRoom = [];
 
-console.log("teste");
-
 io.on("connection", (socket) => {
   const userON = users.some((el) => el.id === socket.id);
   if (!userON) users.push({ id: socket.id });
-  console.log(users);
+
   socket.broadcast.emit("result_users", users);
 
   // Mensagem privada
@@ -84,9 +82,9 @@ io.on("connection", (socket) => {
 
   socket.on("join_room", (roomName) => {
     let existingRoom = usersRoom.find((room) => room.roomID === roomName);
-    console.log(existingRoom);
 
     if (!existingRoom) {
+      socket.broadcast.emit("room_invalid");
       return;
     }
 
@@ -103,7 +101,6 @@ io.on("connection", (socket) => {
     });
 
     // Envie posições iniciais para o usuário recém-conectado
-    // console.log(existingRoom);
     io.to(roomName).emit("initial_positions", {
       positions: existingRoom.positions,
     });
@@ -138,9 +135,6 @@ io.on("connection", (socket) => {
       return;
     }
 
-    console.log(usersRoom);
-    console.log("roomName: ", roomName);
-    console.log(existingRoom);
     io.to(roomName).emit("room_users", {
       adapter: io.sockets.adapter.rooms.get(roomName),
       existingRoom,
@@ -153,19 +147,11 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("start_game", (id) => {
-    const roomName = id;
-    const room = io.sockets.adapter.rooms.get(roomName);
-    const existingRoom = usersRoom.find((room) => room.roomID === roomName);
-    if (existingRoom) {
-      if (!existingRoom.startGame) existingRoom.startGame = false;
-    }
-    if (room && room.size >= 3) {
-      // let gameInProgress = false;
-      io.to(roomName).emit("game_started");
-      startGame(io, roomName, existingRoom);
-    } else {
-      io.to(existingRoom.hostID).emit("insufficient_players", { size: room.size });
+  socket.on("start_game", (roomName) => {
+    const room = usersRoom.find((r) => r.roomID === roomName);
+
+    if (room) {
+      startGame(io, roomName, room);
     }
   });
 
@@ -177,29 +163,163 @@ io.on("connection", (socket) => {
   });
 });
 
-// const startGame = (io, roomName) => {
+const startGame = (io, roomName, room) => {
+  if (room && room.users.length >= 3) {
+    room.startGame = true;
+    io.to(roomName).emit("game_started");
+
+    let currentPlayerIndex = 0;
+    let isDay = true;
+
+    const playTurn = () => {
+      if (isDay) {
+        io.to(roomName).emit("your_turn");
+        // Durante o dia, todos votam ao mesmo tempo
+        let turnDurationDay = 20;
+        const countdown = () => {
+          io.to(roomName).emit("turn_info_day", {
+            countdown: turnDurationDay,
+            isDay: isDay,
+          });
+
+          if (turnDurationDay > 0) {
+            turnDurationDay--;
+            setTimeout(countdown, 1000);
+          }
+        };
+
+        // Inicia o countdown para o turno
+        countdown();
+
+        // Aguarde 30 segundos para votar
+        setTimeout(() => {
+          io.to(roomName).emit("turn_over");
+          io.to(roomName).emit("day_turn_over", false);
+          isDay = false;
+
+          let count = 10;
+          const countdown = () => {
+            io.to(roomName).emit("transition_day", {
+              countdown: count,
+            });
+
+            if (count > 0) {
+              count--;
+              setTimeout(countdown, 1000);
+            }
+          };
+
+          countdown();
+
+          // Aguarde 10 segundos antes de começar a noite
+          setTimeout(() => {
+            playTurn(); // Chama a função para o próximo turno
+          }, 10000);
+        }, 20000);
+      } else {
+        // Durante a noite, cada usuário tem seu próprio turno
+        const currentPlayerId = room.users[currentPlayerIndex].id;
+        io.to(currentPlayerId).emit("your_turn");
+
+        let turnDuration = 5;
+
+        const playNextTurn = () => {
+          io.to(currentPlayerId).emit("turn_over");
+
+          currentPlayerIndex = (currentPlayerIndex + 1) % room.users.length;
+
+          if (currentPlayerIndex === 0) {
+            io.to(roomName).emit("night_over", true);
+
+            let count = 10;
+            const countdown = () => {
+              io.to(roomName).emit("transition_day", {
+                countdown: count,
+              });
+
+              if (count > 0) {
+                count--;
+                setTimeout(countdown, 1000);
+              }
+            };
+
+            countdown();
+
+            setTimeout(() => {
+              isDay = true;
+              playTurn(); // Chama a função para o próximo turno
+            }, 10000);
+          } else {
+            playTurn(); // Chama a função para o próximo turno
+          }
+        };
+
+        const countdown = () => {
+          io.to(roomName).emit("turn_info", {
+            currentPlayer: currentPlayerId,
+            countdown: turnDuration,
+            isDay: isDay,
+          });
+
+          if (turnDuration > 0) {
+            turnDuration--;
+            setTimeout(countdown, 1000);
+          } else {
+            playNextTurn();
+          }
+        };
+
+        // Inicia o countdown para o turno
+        countdown();
+      }
+    };
+
+    // Inicia o primeiro turno
+    playTurn();
+  } else {
+    io.to(room.hostID).emit("insufficient_players", { size: room.users.length });
+  }
+};
+
+// const startGame = (io, roomName, existingRoom) => {
 //   const room = io.sockets.adapter.rooms.get(roomName);
 //   const users = Array.from(room);
 
-//   if (users.length >= 3) {
+//   if (!existingRoom.startGame && users.length >= 3) {
+//     existingRoom.startGame = true;
 //     let currentPlayerIndex = 0;
-//     let countdownTimer;
 
-//     countdownTimer = setInterval(() => {
+//     const playTurn = () => {
 //       const currentPlayerId = users[currentPlayerIndex];
-//       io.to(currentPlayerId).emit('your_turn');
-//       io.to(roomName).emit('turn_info', {
-//         currentPlayer: currentPlayerId,
-//         countdown: 15,
-//       });
+//       io.to(currentPlayerId).emit("your_turn");
 
-//       setTimeout(() => {
-//         io.to(currentPlayerId).emit('turn_over');
-//         currentPlayerIndex = (currentPlayerIndex + 1) % users.length;
-//       }, 15000);
-//     }, 16000); // Delay timer by 1 second to account for network latency
+//       let countdown = 5;
+//       const countdownInterval = setInterval(() => {
+//         io.to(roomName).emit("turn_info", {
+//           currentPlayer: currentPlayerId,
+//           countdown: countdown,
+//         });
+
+//         if (countdown <= 0) {
+//           clearInterval(countdownInterval);
+//           io.to(currentPlayerId).emit("turn_over");
+//           currentPlayerIndex = (currentPlayerIndex + 1) % users.length;
+
+//           if (currentPlayerIndex < users.length) {
+//             setTimeout(playTurn, 1000);
+//           } else {
+//             io.to(roomName).emit("game_over");
+//             gameInProgress = false;
+//           }
+//         } else {
+//           countdown--;
+//         }
+//       }, 1000);
+//     };
+
+//     playTurn();
 //   } else {
-//     io.to(roomName).emit('insufficient_players');
+//     io.to(roomName).emit("insufficient_players");
 //   }
 // };
 
@@ -265,48 +385,6 @@ if (initialPositions.some(isPositionOutOfBounds)) {
 }
 
 // Assuming you have a variable to keep track of the game status
-
-const startGame = (io, roomName, existingRoom) => {
-  const room = io.sockets.adapter.rooms.get(roomName);
-  const users = Array.from(room);
-
-  if (!existingRoom.startGame && users.length >= 3) {
-    existingRoom.startGame = true;
-    let currentPlayerIndex = 0;
-
-    const playTurn = () => {
-      const currentPlayerId = users[currentPlayerIndex];
-      io.to(currentPlayerId).emit("your_turn");
-
-      let countdown = 5;
-      const countdownInterval = setInterval(() => {
-        io.to(roomName).emit("turn_info", {
-          currentPlayer: currentPlayerId,
-          countdown: countdown,
-        });
-
-        if (countdown <= 0) {
-          clearInterval(countdownInterval);
-          io.to(currentPlayerId).emit("turn_over");
-          currentPlayerIndex = (currentPlayerIndex + 1) % users.length;
-
-          if (currentPlayerIndex < users.length) {
-            setTimeout(playTurn, 1000);
-          } else {
-            io.to(roomName).emit("game_over");
-            gameInProgress = false;
-          }
-        } else {
-          countdown--;
-        }
-      }, 1000);
-    };
-
-    playTurn();
-  } else {
-    io.to(roomName).emit("insufficient_players");
-  }
-};
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
